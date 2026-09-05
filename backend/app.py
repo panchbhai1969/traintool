@@ -31,15 +31,13 @@ app.add_middleware(
 DEFAULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["stain_present", "confidence", "stain_type", "surface", "severity", "reasoning", "differential_considered"],
+    "required": ["reasoning", "stain_present"],
     "properties": {
+        "reasoning": {
+            "type": "string",
+            "description": "A detailed, coherent visual explanation supporting the verdict.",
+        },
         "stain_present": {"type": "boolean"},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-        "stain_type": {"enum": ["chromogenic", "tobacco", "chlorhexidine", "food_beverage", "uncertain", "none"]},
-        "surface": {"enum": ["cervical", "occlusal_pits", "interproximal", "full_facial", "other"]},
-        "severity": {"enum": ["none", "mild", "moderate", "heavy"]},
-        "reasoning": {"type": "string"},
-        "differential_considered": {"type": "array", "items": {"type": "string"}},
     },
 }
 
@@ -49,7 +47,6 @@ class EvaluationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=50_000)
     schema_: dict[str, Any] = Field(alias="schema")
     model: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=300)
-    temperature: float = Field(default=0, ge=0, le=2)
     max_tokens: int = Field(default=800, ge=1, le=16_384)
     max_edge: int = Field(default=896, ge=128, le=4096)
     padding: float = Field(default=0.25, ge=0, le=1)
@@ -98,7 +95,6 @@ async def evaluate(payload: EvaluationRequest, request: Request) -> StreamingRes
                     model=payload.model,
                     prompt=payload.prompt,
                     schema=payload.schema_,
-                    temperature=payload.temperature,
                     max_tokens=payload.max_tokens,
                     max_edge=payload.max_edge,
                     padding=payload.padding,

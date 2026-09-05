@@ -92,6 +92,29 @@ def parse_and_validate(raw: str, schema: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def build_system_prompt(prompt: str, schema: dict[str, Any]) -> str:
+    schema_text = json.dumps(schema, separators=(",", ":"))
+    return (
+        f"{prompt}\n\n"
+        "When the schema contains a reasoning field, write a detailed, coherent visual explanation first. "
+        "Describe the observed color, location, texture, boundaries, relationship to adjacent enamel and the gingival margin, "
+        "relevant image-quality limitations, and why plausible look-alikes such as shadow, calculus, restoration margins, or caries are more or less likely. "
+        "Then provide the stain-present verdict. "
+        "Base the explanation only on visible evidence and use multiple sentences where useful.\n\n"
+        f"Return only JSON matching this JSON Schema:\n{schema_text}"
+    )
+
+
+def build_openrouter_payload(model: str, messages: list[dict[str, Any]], max_tokens: int) -> dict[str, Any]:
+    return {
+        "model": model,
+        "messages": messages,
+        # "temperature": 0,
+        # "seed": 42,
+        # "max_tokens": max_tokens,
+    }
+
+
 async def evaluate_one(
     client: httpx.AsyncClient,
     crop: CropRecord,
@@ -100,7 +123,6 @@ async def evaluate_one(
     model: str,
     prompt: str,
     schema: dict[str, Any],
-    temperature: float,
     max_tokens: int,
     max_edge: int,
     padding: float,
@@ -111,11 +133,10 @@ async def evaluate_one(
     try:
         source_path = await _source_image(client, crop)
         crop_path, data_url = await asyncio.to_thread(_prepare_crop, source_path, crop, padding, max_edge)
-        schema_text = json.dumps(schema, separators=(",", ":"))
         messages = [
             {
                 "role": "system",
-                "content": f"{prompt}\n\nReturn only JSON matching this JSON Schema:\n{schema_text}",
+                "content": build_system_prompt(prompt, schema),
             },
             {
                 "role": "user",
@@ -125,12 +146,7 @@ async def evaluate_one(
                 ],
             },
         ]
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        payload = build_openrouter_payload(model, messages, max_tokens)
         response: httpx.Response | None = None
         for attempt in range(5):
             response = await client.post(

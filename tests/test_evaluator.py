@@ -6,7 +6,7 @@ from jsonschema.exceptions import ValidationError
 from PIL import Image
 
 from backend.dataset import CropRecord
-from backend.evaluator import _prepare_crop, parse_and_validate
+from backend.evaluator import _prepare_crop, build_openrouter_payload, build_system_prompt, parse_and_validate
 
 
 SCHEMA = {
@@ -26,6 +26,20 @@ def test_parser_accepts_json_and_markdown_fence() -> None:
 def test_parser_rejects_schema_mismatch() -> None:
     with pytest.raises(ValidationError):
         parse_and_validate('{"stain_present":"yes"}', SCHEMA)
+
+
+def test_system_prompt_requests_explanation_before_verdict() -> None:
+    prompt = build_system_prompt("Evaluate", {"type": "object"})
+    assert prompt.index("explanation first") < prompt.index("stain-present verdict")
+    assert "adjacent enamel" in prompt
+    assert "image-quality limitations" in prompt
+    assert prompt.endswith('{"type":"object"}')
+
+
+def test_openrouter_payload_leaves_sampling_parameters_to_provider() -> None:
+    payload = build_openrouter_payload("test/model", [{"role": "user", "content": "test"}], 100)
+    assert "temperature" not in payload
+    assert "seed" not in payload
 
 
 def test_crop_padding_is_clipped_at_image_edge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

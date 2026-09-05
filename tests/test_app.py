@@ -2,10 +2,16 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.app import app, catalog
+from backend.app import DEFAULT_SCHEMA, app, catalog
 
 
 client = TestClient(app)
+
+
+def test_default_schema_puts_reasoning_first() -> None:
+    assert DEFAULT_SCHEMA["required"][0] == "reasoning"
+    assert next(iter(DEFAULT_SCHEMA["properties"])) == "reasoning"
+    assert set(DEFAULT_SCHEMA["properties"]) == {"reasoning", "stain_present"}
 
 
 def test_page_and_static_catalog_are_served() -> None:

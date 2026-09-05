@@ -8,7 +8,6 @@ const state = {
   prompt: 'You are evaluating a crop of one tooth from a dental photograph for extrinsic stain. Use adjacent enamel and the gingival margin as context. Distinguish stain from shadow, calculus, restoration margins, and caries. Be conservative when visual evidence is ambiguous.',
   schemaText: '',
   model: '',
-  temperature: 0,
   maxTokens: 800,
   maxEdge: 896,
   padding: .25,
@@ -17,6 +16,11 @@ const state = {
   running: false,
   banner: '',
   controller: null,
+  history: [],
+  historyOpen: false,
+  activeHistory: null,
+  configOpen: false,
+  leftPanelOpen: false,
 }
 
 const root = document.querySelector('#root')
@@ -65,11 +69,10 @@ function cropCards(image) {
   if (!image.crops.length) return '<div class="empty">No tooth boxes found for this image.</div>'
   return `<div class="crop-grid">${image.crops.map((crop, index) => {
     const event = state.results[crop.crop_id]
-    const confidence = typeof event?.result?.confidence === 'number' ? `${Math.round(event.result.confidence * 100)}%` : ''
     return `<article class="crop-card ${state.selected.has(crop.crop_id) ? 'selected' : ''} ${resultClass(event)}" data-crop="${escapeHtml(crop.crop_id)}">
       <div class="crop-frame">${cropSvg(image, crop)}</div>
       <div class="crop-meta"><span>Tooth ${index + 1}</span><span class="status">${escapeHtml(event?.type?.replace('_', ' ') || 'ready')}</span></div>
-      ${event?.result ? `<div class="verdict"><b>${event.result.stain_present ? 'Stain' : 'Clear'}</b><span>${confidence}</span></div>` : ''}
+      ${event?.result ? `<div class="verdict"><b>${event.result.stain_present ? 'Stain' : 'Clear'}</b></div>` : ''}
     </article>`
   }).join('')}</div>`
 }
@@ -78,11 +81,118 @@ function detail(image) {
   const crop = image.crops.find(item => item.crop_id === state.activeCrop)
   if (!crop) return ''
   const event = state.results[crop.crop_id]
-  const body = event ? JSON.stringify(event.result || { error: event.error, raw: event.raw }, null, 2) : ''
+  const result = event?.result
+  const orderedResult = result?.reasoning === undefined ? result : { reasoning: result.reasoning, ...Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'reasoning')) }
+  const body = event ? JSON.stringify(orderedResult || { error: event.error, raw: event.raw }, null, 2) : ''
+  const explanation = result?.reasoning == null ? '' : `<div class="explanation"><span>Explanation</span><p>${escapeHtml(result.reasoning)}</p></div>`
+  const verdict = result ? `<div class="detail-verdict"><span>Verdict</span><b>${result.stain_present ? 'Stain present' : 'No stain'}</b></div>` : ''
   return `<section class="detail"><div class="detail-image">${cropSvg(image, crop)}</div><div>
     <p class="eyebrow">Selected tooth</p><h3>${escapeHtml(crop.crop_id)}</h3>
-    ${event ? `<div class="metrics"><span>${event.latency_ms ? `${event.latency_ms} ms` : '—'}</span><span>${event.prompt_tokens ?? '—'} prompt tokens</span><span>${event.completion_tokens ?? '—'} completion tokens</span><span>${event.cost != null ? `$${event.cost}` : 'cost unavailable'}</span></div><pre>${escapeHtml(body)}</pre>` : '<p class="muted">Run this crop to inspect its structured response.</p>'}
+    ${event ? `${explanation}${verdict}<div class="metrics"><span>${event.latency_ms ? `${event.latency_ms} ms` : '—'}</span><span>${event.prompt_tokens ?? '—'} prompt tokens</span><span>${event.completion_tokens ?? '—'} completion tokens</span><span>${event.cost != null ? `$${event.cost}` : 'cost unavailable'}</span></div><pre>${escapeHtml(body)}</pre>` : '<p class="muted">Run this crop to inspect its structured response.</p>'}
   </div></section>`
+}
+
+function formatCost(entry) {
+  const amount = `$${entry.cost.toFixed(6)}`
+  if (entry.missingCost === entry.calls) return `Unavailable · ${entry.missingCost} call${entry.missingCost === 1 ? '' : 's'}`
+  return entry.missingCost ? `${amount} · ${entry.missingCost} unavailable` : amount
+}
+
+function historyRows() {
+  if (!state.history.length) return '<div class="history-empty">No runs in this session yet.</div>'
+  return `<div class="history-table-wrap"><table class="history-table">
+    <thead><tr><th>Time</th><th>Image ID</th><th>Model / mode</th><th>Calls</th><th>Results</th><th>Total cost</th><th>Status</th></tr></thead>
+    <tbody>${state.history.map(entry => `<tr>
+      <td>${escapeHtml(new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</td>
+      <td class="history-image">${escapeHtml(entry.imageId)}</td>
+      <td><span class="history-model">${escapeHtml(entry.model)}</span><small>${escapeHtml(entry.mode)}${entry.mode === 'parallel' ? ` · ${entry.concurrency} workers` : ''}</small></td>
+      <td><b>${entry.calls}</b></td>
+      <td><span class="history-ok">${entry.completed} completed</span>${entry.parseErrors ? `<span class="history-warn">${entry.parseErrors} parse errors</span>` : ''}${entry.failed ? `<span class="history-bad">${entry.failed} failed</span>` : ''}${entry.cancelled ? `<span class="history-muted">${entry.cancelled} cancelled</span>` : ''}</td>
+      <td class="history-cost">${escapeHtml(formatCost(entry))}</td>
+      <td><span class="history-status ${entry.status}">${escapeHtml(entry.status)}</span></td>
+    </tr>`).join('')}</tbody>
+  </table></div>`
+}
+
+function historyDialog() {
+  return `<dialog id="historyDialog" class="history-dialog">
+    <div class="history-heading"><div><p class="eyebrow">Current browser session</p><h2>Run history</h2><p class="muted">Costs are summed from OpenRouter's per-call usage details.</p></div><button id="closeHistory" class="dialog-close" aria-label="Close">×</button></div>
+    ${historyRows()}
+    <div class="history-footer"><span>${state.history.length} image run${state.history.length === 1 ? '' : 's'}</span><button id="clearHistory" ${state.history.length ? '' : 'disabled'}>Clear history</button></div>
+  </dialog>`
+}
+
+function imageIdForCrop(cropId) {
+  for (const image of state.dataset.images) {
+    if (image.crops.some(crop => crop.crop_id === cropId)) return image.image_id
+  }
+  return 'unknown'
+}
+
+function beginHistory(cropIds) {
+  const runId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+  const timestamp = new Date().toISOString()
+  const grouped = new Map()
+  cropIds.forEach(cropId => {
+    const imageId = imageIdForCrop(cropId)
+    if (!grouped.has(imageId)) grouped.set(imageId, [])
+    grouped.get(imageId).push(cropId)
+  })
+  const cropEntries = new Map()
+  const entries = []
+  for (const [imageId, ids] of grouped) {
+    const entry = {
+      id: `${runId}:${imageId}`,
+      runId,
+      imageId,
+      timestamp,
+      model: state.model,
+      mode: state.mode,
+      concurrency: state.mode === 'sequential' ? 1 : state.concurrency,
+      calls: ids.length,
+      completed: 0,
+      parseErrors: 0,
+      failed: 0,
+      cancelled: 0,
+      cost: 0,
+      missingCost: 0,
+      status: 'running',
+      terminalCrops: new Set(),
+    }
+    entries.push(entry)
+    ids.forEach(id => cropEntries.set(id, entry))
+  }
+  state.history.unshift(...entries)
+  state.activeHistory = { runId, entries, cropEntries }
+  return state.activeHistory
+}
+
+function recordHistoryEvent(context, event) {
+  if (!event?.crop_id || !['completed', 'parse_error', 'failed', 'cancelled'].includes(event.type)) return
+  const entry = context.cropEntries.get(event.crop_id)
+  if (!entry || entry.terminalCrops.has(event.crop_id)) return
+  entry.terminalCrops.add(event.crop_id)
+  if (event.type === 'completed') entry.completed += 1
+  else if (event.type === 'parse_error') entry.parseErrors += 1
+  else if (event.type === 'failed') entry.failed += 1
+  else entry.cancelled += 1
+  const cost = Number(event.cost)
+  if (event.cost != null && Number.isFinite(cost)) entry.cost += cost
+  else entry.missingCost += 1
+}
+
+function finishHistory(context, stopped = false) {
+  for (const entry of context.entries) {
+    const unfinished = entry.calls - entry.terminalCrops.size
+    if (unfinished > 0) {
+      entry.cancelled += unfinished
+      entry.missingCost += unfinished
+    }
+    if (stopped) entry.status = 'stopped'
+    else if (entry.completed === entry.calls) entry.status = 'completed'
+    else entry.status = 'partial'
+  }
+  if (state.activeHistory?.runId === context.runId) state.activeHistory = null
 }
 
 function render() {
@@ -94,17 +204,24 @@ function render() {
   const image = currentImage()
   const failed = Object.values(state.results).filter(result => ['failed', 'parse_error'].includes(result.type)).length
   const allSelected = image?.crops.length && image.crops.every(crop => state.selected.has(crop.crop_id))
-  root.innerHTML = `<main class="app-shell">
+  root.innerHTML = `<main class="app-shell ${state.leftPanelOpen ? '' : 'panel-collapsed'}">
     <aside class="editor-panel">
-      <header><p class="eyebrow">Evaluation workspace</p><h1>Stain Prompt Lab</h1><p class="muted">${state.dataset.image_count.toLocaleString()} images · ${state.dataset.crop_count.toLocaleString()} tooth boxes</p></header>
-      <label>System prompt<textarea id="prompt" class="prompt">${escapeHtml(state.prompt)}</textarea></label>
-      <label>Output schema<textarea id="schema" class="schema" spellcheck="false">${escapeHtml(state.schemaText)}</textarea></label>
-      <div class="settings-grid">
-        <label class="wide">Model ID<input id="model" value="${escapeHtml(state.model)}" /></label>
-        <label>Temperature<input id="temperature" type="number" min="0" max="2" step="0.1" value="${state.temperature}" /></label>
-        <label>Max tokens<input id="maxTokens" type="number" min="1" max="16384" value="${state.maxTokens}" /></label>
-        <label>Padding<input id="padding" type="number" min="0" max="1" step="0.05" value="${state.padding}" /></label>
-        <label>Max edge<input id="maxEdge" type="number" min="128" max="4096" step="64" value="${state.maxEdge}" /></label>
+      <button id="togglePanel" class="panel-toggle" aria-label="${state.leftPanelOpen ? 'Collapse' : 'Expand'} settings panel" title="${state.leftPanelOpen ? 'Collapse' : 'Expand'} settings">${state.leftPanelOpen ? '‹' : '›'}</button>
+      <div class="editor-content">
+        <header><p class="eyebrow">Evaluation workspace</p><h1>Stain Prompt Lab</h1><p class="muted">${state.dataset.image_count.toLocaleString()} images · ${state.dataset.crop_count.toLocaleString()} tooth boxes</p></header>
+        <details id="configAccordion" class="config-accordion" ${state.configOpen ? 'open' : ''}>
+          <summary><span>Prompt & model settings</span><small>${escapeHtml(state.model)}</small></summary>
+          <div class="config-content">
+            <label>System prompt<textarea id="prompt" class="prompt">${escapeHtml(state.prompt)}</textarea></label>
+            <label>Output schema<textarea id="schema" class="schema" spellcheck="false">${escapeHtml(state.schemaText)}</textarea></label>
+            <div class="settings-grid">
+              <label class="wide">Model ID<input id="model" value="${escapeHtml(state.model)}" /></label>
+              <label>Max tokens<input id="maxTokens" type="number" min="1" max="16384" value="${state.maxTokens}" /></label>
+              <label>Padding<input id="padding" type="number" min="0" max="1" step="0.05" value="${state.padding}" /></label>
+              <label>Max edge<input id="maxEdge" type="number" min="128" max="4096" step="64" value="${state.maxEdge}" /></label>
+            </div>
+          </div>
+        </details>
       </div>
     </aside>
     <section class="workspace">
@@ -115,21 +232,34 @@ function render() {
         <label class="inline">Concurrency <input id="concurrency" type="range" min="1" max="32" value="${state.concurrency}" ${state.mode === 'sequential' ? 'disabled' : ''}/><b>${state.mode === 'sequential' ? 1 : state.concurrency}</b></label>
         <button id="run" class="primary" ${!state.selected.size || state.running ? 'disabled' : ''}>▶ Run selected (${state.selected.size})</button>
         ${state.running ? '<button id="stop" class="danger">■ Stop</button>' : `<button id="retry" ${failed ? '' : 'disabled'}>↻ Retry failed</button>`}
+        <button id="openHistory" class="history-button">History <span>${state.history.length}</span></button>
       </div>
       ${state.banner ? `<div class="banner">⚠ ${escapeHtml(state.banner)}<button id="closeBanner">×</button></div>` : ''}
       ${image ? `<div class="image-heading"><div><p class="eyebrow">Source image</p><h2>${escapeHtml(image.image_id)}</h2></div><button id="selectAll">${allSelected ? 'Clear image' : 'Select all teeth'}</button></div><div class="grid-scroll">${cropCards(image)}${detail(image)}</div>` : '<div class="empty">No matching image.</div>'}
     </section>
+    ${historyDialog()}
   </main>`
   bindEvents()
+  if (state.historyOpen) document.querySelector('#historyDialog')?.showModal()
 }
 
 function bindEvents() {
+  const changeImage = updateIndex => {
+    state.imageIndex = updateIndex(state.imageIndex)
+    state.selected.clear()
+    state.activeCrop = null
+    render()
+  }
   const update = (id, key, transform = value => value) => document.querySelector(`#${id}`)?.addEventListener('input', event => { state[key] = transform(event.target.value) })
-  update('prompt', 'prompt'); update('schema', 'schemaText'); update('model', 'model'); update('temperature', 'temperature', Number); update('maxTokens', 'maxTokens', Number); update('maxEdge', 'maxEdge', Number)
+  document.querySelector('#togglePanel')?.addEventListener('click', () => { state.leftPanelOpen = !state.leftPanelOpen; render() })
+  document.querySelector('#configAccordion')?.addEventListener('toggle', event => { state.configOpen = event.currentTarget.open })
+  update('prompt', 'prompt'); update('schema', 'schemaText'); update('model', 'model'); update('maxTokens', 'maxTokens', Number); update('maxEdge', 'maxEdge', Number)
   document.querySelector('#padding')?.addEventListener('change', event => { state.padding = Number(event.target.value); render() })
   document.querySelector('#search')?.addEventListener('input', event => {
     state.query = event.target.value
     state.imageIndex = 0
+    state.selected.clear()
+    state.activeCrop = null
     const caret = state.query.length
     render()
     const input = document.querySelector('#search')
@@ -138,9 +268,16 @@ function bindEvents() {
   })
   document.querySelector('#mode')?.addEventListener('change', event => { state.mode = event.target.value; render() })
   document.querySelector('#concurrency')?.addEventListener('change', event => { state.concurrency = Number(event.target.value); render() })
-  document.querySelector('#previous')?.addEventListener('click', () => { state.imageIndex = Math.max(0, state.imageIndex - 1); render() })
-  document.querySelector('#next')?.addEventListener('click', () => { state.imageIndex = Math.min(images().length - 1, state.imageIndex + 1); render() })
+  document.querySelector('#previous')?.addEventListener('click', () => changeImage(index => Math.max(0, index - 1)))
+  document.querySelector('#next')?.addEventListener('click', () => changeImage(index => Math.min(images().length - 1, index + 1)))
   document.querySelector('#closeBanner')?.addEventListener('click', () => { state.banner = ''; render() })
+  document.querySelector('#openHistory')?.addEventListener('click', () => { state.historyOpen = true; document.querySelector('#historyDialog')?.showModal() })
+  document.querySelector('#closeHistory')?.addEventListener('click', () => { state.historyOpen = false; document.querySelector('#historyDialog')?.close() })
+  document.querySelector('#historyDialog')?.addEventListener('close', () => { state.historyOpen = false })
+  document.querySelector('#historyDialog')?.addEventListener('click', event => {
+    if (event.target === event.currentTarget) { state.historyOpen = false; event.currentTarget.close() }
+  })
+  document.querySelector('#clearHistory')?.addEventListener('click', () => { state.history = []; render() })
   document.querySelectorAll('[data-crop]').forEach(card => card.addEventListener('click', () => {
     const id = card.dataset.crop
     state.activeCrop = id
@@ -170,13 +307,14 @@ async function run(cropIds) {
   state.banner = ''
   state.running = true
   cropIds.forEach(id => { state.results[id] = { type: 'queued', crop_id: id } })
+  const historyContext = beginHistory(cropIds)
   const controller = new AbortController()
   state.controller = controller
   render()
   try {
     const response = await fetch('/api/evaluate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, temperature: state.temperature, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency }),
+      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency }),
     })
     if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Evaluation failed (${response.status})`) }
     if (!response.body) throw new Error('Streaming is unavailable in this browser')
@@ -188,7 +326,10 @@ async function run(cropIds) {
       const blocks = buffer.split('\n\n'); buffer = blocks.pop() || ''
       for (const block of blocks) {
         const event = parseSseBlock(block)
-        if (event?.crop_id) state.results[event.crop_id] = event
+        if (event?.crop_id) {
+          state.results[event.crop_id] = event
+          recordHistoryEvent(historyContext, event)
+        }
         if (event?.type === 'rate_limited') state.banner = `OpenRouter rate limited a request; retrying in ${event.retry_in}s.`
       }
       render()
@@ -197,10 +338,15 @@ async function run(cropIds) {
   } catch (error) {
     if (error.name === 'AbortError') {
       cropIds.forEach(id => {
-        if (['queued', 'running', 'rate_limited'].includes(state.results[id]?.type)) state.results[id] = { type: 'cancelled', crop_id: id }
+        if (['queued', 'running', 'rate_limited'].includes(state.results[id]?.type)) {
+          const event = { type: 'cancelled', crop_id: id }
+          state.results[id] = event
+          recordHistoryEvent(historyContext, event)
+        }
       })
     } else state.banner = error.message
   } finally {
+    finishHistory(historyContext, controller.signal.aborted)
     state.running = false; state.controller = null; render()
   }
 }

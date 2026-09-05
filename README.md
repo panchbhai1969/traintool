@@ -20,6 +20,8 @@ The backend reads OpenRouter configuration from `../.env` first and an optional 
 
 Open <http://localhost:8000>. There is one application API, `POST /api/evaluate`; dataset content is served as a static page resource at `/dataset.json`.
 
+The **History** button shows session-only run summaries grouped by source image. Parallel crop costs are summed into one entry with the image ID and number of calls. History is intentionally cleared when the page is refreshed.
+
 ## Tests
 
 ```bash
