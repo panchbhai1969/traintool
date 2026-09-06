@@ -28,6 +28,10 @@ def _file_key(value: str) -> str:
 
 
 async def _source_image(client: httpx.AsyncClient, crop: CropRecord) -> Path:
+    if crop.source_path is not None:
+        if not crop.source_path.is_file():
+            raise FileNotFoundError("Uploaded source image is no longer available")
+        return crop.source_path
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     path = UPLOAD_DIR / f"{_file_key(crop.image_url)}.image"
     lock = _download_locks.setdefault(crop.image_url, asyncio.Lock())

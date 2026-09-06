@@ -6,7 +6,7 @@ from jsonschema.exceptions import ValidationError
 from PIL import Image
 
 from backend.dataset import CropRecord
-from backend.evaluator import _prepare_crop, build_openrouter_payload, build_system_prompt, parse_and_validate
+from backend.evaluator import _prepare_crop, _source_image, build_openrouter_payload, build_system_prompt, parse_and_validate
 
 
 SCHEMA = {
@@ -51,3 +51,16 @@ def test_crop_padding_is_clipped_at_image_edge(tmp_path: Path, monkeypatch: pyte
     assert output.exists()
     assert Image.open(output).size == (25, 25)
     assert data_url.startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_uploaded_crop_uses_local_source_without_http(tmp_path: Path) -> None:
+    source = tmp_path / "upload.jpg"
+    Image.new("RGB", (100, 80), "white").save(source)
+    crop = CropRecord("image:crop", "image", "/api/uploads/image", 100, 80, 0, 0, 20, 25, source)
+
+    class NoDownloadClient:
+        async def get(self, *_args, **_kwargs):
+            raise AssertionError("Uploaded image should not be downloaded")
+
+    assert await _source_image(NoDownloadClient(), crop) == source

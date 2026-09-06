@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import re
+import uuid
+from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -11,14 +16,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from .dataset import DatasetCatalog
 from .evaluator import evaluate_one
-from .settings import DEFAULT_MODEL, OPENROUTER_API_KEY_KEY, ROOT
+from .settings import DEFAULT_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
+from .tooth_extractor import ToothExtractionError, extract_teeth
 
 
 catalog = DatasetCatalog()
+uploaded_sources: dict[str, tuple[Path, str]] = {}
 app = FastAPI(title="Dental Stain Prompt Lab")
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +47,13 @@ DEFAULT_SCHEMA: dict[str, Any] = {
         },
         "stain_present": {"type": "boolean"},
     },
+}
+
+MAX_UPLOAD_BYTES = 30 * 1024 * 1024
+SUPPORTED_IMAGE_FORMATS = {
+    "JPEG": (".jpg", "image/jpeg"),
+    "PNG": (".png", "image/png"),
+    "WEBP": (".webp", "image/webp"),
 }
 
 
@@ -66,6 +81,79 @@ class EvaluationRequest(BaseModel):
 @app.get("/dataset.json", include_in_schema=False)
 async def dataset() -> JSONResponse:
     return JSONResponse({**catalog.payload(), "defaults": {"model": DEFAULT_MODEL, "schema": DEFAULT_SCHEMA}})
+
+
+def _inspect_upload(contents: bytes) -> tuple[int, int, str, str]:
+    try:
+        with Image.open(io.BytesIO(contents)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(contents)) as image:
+            width, height = image.size
+            image_format = str(image.format or "").upper()
+    except (UnidentifiedImageError, OSError) as error:
+        raise ValueError("Upload is not a valid image") from error
+    if image_format not in SUPPORTED_IMAGE_FORMATS:
+        raise ValueError("Only JPEG, PNG, and WebP images are supported")
+    if width <= 0 or height <= 0:
+        raise ValueError("Image dimensions are invalid")
+    extension, media_type = SUPPORTED_IMAGE_FORMATS[image_format]
+    return width, height, extension, media_type
+
+
+def _upload_image_id(filename: str | None) -> str:
+    stem = Path(filename or "image").stem.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")[:32] or "image"
+    return f"upload-{slug}-{uuid.uuid4().hex[:8]}"
+
+
+@app.post("/api/images/upload")
+async def upload_image(request: Request) -> JSONResponse:
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Uploaded image exceeds the 30 MB limit")
+        chunks.append(chunk)
+    contents = b"".join(chunks)
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded image is empty")
+    try:
+        width, height, extension, media_type = await asyncio.to_thread(_inspect_upload, contents)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    try:
+        detections = await extract_teeth(contents)
+    except ToothExtractionError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    encoded_filename = request.headers.get("x-filename")
+    image_id = _upload_image_id(unquote(encoded_filename) if encoded_filename else None)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    source_path = UPLOAD_DIR / f"{image_id}{extension}"
+    temporary_path = source_path.with_suffix(f"{extension}.tmp")
+    temporary_path.write_bytes(contents)
+    temporary_path.replace(source_path)
+    uploaded_sources[image_id] = (source_path, media_type)
+    image = catalog.register_upload(
+        image_id=image_id,
+        image_url=f"/api/uploads/{image_id}",
+        source_path=source_path,
+        original_width=width,
+        original_height=height,
+        boxes=[detection.percentage_box() for detection in detections],
+    )
+    return JSONResponse({"image": image})
+
+
+@app.get("/api/uploads/{image_id}", include_in_schema=False)
+async def uploaded_image(image_id: str) -> FileResponse:
+    source = uploaded_sources.get(image_id)
+    if source is None or not source[0].is_file():
+        raise HTTPException(status_code=404, detail="Uploaded image is no longer available")
+    path, media_type = source
+    return FileResponse(path, media_type=media_type)
 
 
 @app.post("/api/evaluate")

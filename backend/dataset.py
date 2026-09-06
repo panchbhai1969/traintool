@@ -21,6 +21,7 @@ class CropRecord:
     y: float
     width: float
     height: float
+    source_path: Path | None = None
 
 
 class DatasetCatalog:
@@ -89,3 +90,37 @@ class DatasetCatalog:
             "crop_count": len(self.crops),
         }
 
+    def register_upload(
+        self,
+        *,
+        image_id: str,
+        image_url: str,
+        source_path: Path,
+        original_width: int,
+        original_height: int,
+        boxes: list[dict[str, float]],
+    ) -> dict[str, Any]:
+        crop_summaries: list[dict[str, Any]] = []
+        for index, box in enumerate(boxes, start=1):
+            crop_id = f"{image_id}:tooth-{index}"
+            record = CropRecord(
+                crop_id=crop_id,
+                image_id=image_id,
+                image_url=image_url,
+                original_width=original_width,
+                original_height=original_height,
+                x=box["x"],
+                y=box["y"],
+                width=box["width"],
+                height=box["height"],
+                source_path=source_path,
+            )
+            self.crops[crop_id] = record
+            crop_summaries.append(self.public_crop(record))
+        return {
+            "image_id": image_id,
+            "image_url": image_url,
+            "source_row": None,
+            "crop_count": len(crop_summaries),
+            "crops": crop_summaries,
+        }

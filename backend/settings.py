@@ -25,6 +25,8 @@ load_dotenv()
 OPENROUTER_API_KEY_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-vl-235b-a22b-instruct")
+TOOTH_API_URL = os.getenv("TOOTH_API_URL", "https://internal9.logy.ai/runsync")
+TOOTH_API_KEY = os.getenv("TOOTH_API_KEY")
 DATA_DIR = ROOT / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 CROP_DIR = DATA_DIR / "crops"

@@ -14,6 +14,7 @@ const state = {
   mode: 'parallel',
   concurrency: 8,
   running: false,
+  uploading: false,
   banner: '',
   controller: null,
   history: [],
@@ -66,7 +67,7 @@ function resultClass(event) {
 }
 
 function cropCards(image) {
-  if (!image.crops.length) return '<div class="empty">No tooth boxes found for this image.</div>'
+  if (!image.crops.length) return '<div class="no-crops"><h3>No tooth boxes detected</h3><p class="muted">The source image is shown below.</p></div>'
   return `<div class="crop-grid">${image.crops.map((crop, index) => {
     const event = state.results[crop.crop_id]
     return `<article class="crop-card ${state.selected.has(crop.crop_id) ? 'selected' : ''} ${resultClass(event)}" data-crop="${escapeHtml(crop.crop_id)}">
@@ -75,6 +76,26 @@ function cropCards(image) {
       ${event?.result ? `<div class="verdict"><b>${event.result.stain_present ? 'Stain' : 'Clear'}</b></div>` : ''}
     </article>`
   }).join('')}</div>`
+}
+
+function detectionClass(crop) {
+  const event = state.results[crop.crop_id]
+  if (event?.type !== 'completed') return 'undecided'
+  return event.result?.stain_present ? 'stain' : 'clear'
+}
+
+function sourceOverview(image) {
+  const boxes = image.crops.map((crop, index) => `<button
+    class="detection-box ${detectionClass(crop)} ${state.selected.has(crop.crop_id) ? 'selected' : ''}"
+    data-overview-crop="${escapeHtml(crop.crop_id)}"
+    style="left:${crop.box.x}%;top:${crop.box.y}%;width:${crop.box.width}%;height:${crop.box.height}%"
+    aria-label="Select tooth ${index + 1}"
+    title="Tooth ${index + 1}"
+  ><span>${index + 1}</span></button>`).join('')
+  return `<section class="source-overview">
+    <div class="source-overview-heading"><div><p class="eyebrow">Full source image</p><h3>Detection overview</h3></div><div class="detection-legend"><span class="stain">Stain</span><span class="clear">Clear</span><span class="undecided">Not decided</span></div></div>
+    <div class="annotated-source"><img src="${escapeHtml(image.image_url)}" alt="Full dental source image"/>${boxes}</div>
+  </section>`
 }
 
 function detail(image) {
@@ -226,6 +247,8 @@ function render() {
     </aside>
     <section class="workspace">
       <div class="toolbar">
+        <button id="upload" ${state.uploading ? 'disabled' : ''}>${state.uploading ? 'Detecting teeth…' : '↑ Upload image'}</button>
+        <input id="uploadInput" type="file" accept="image/jpeg,image/png,image/webp" hidden />
         <div class="search"><span>⌕</span><input id="search" placeholder="Find image ID" value="${escapeHtml(state.query)}" /></div>
         <div class="pager"><button id="previous" ${state.imageIndex === 0 ? 'disabled' : ''}>‹</button><span>${available.length ? state.imageIndex + 1 : 0} / ${available.length}</span><button id="next" ${state.imageIndex >= available.length - 1 ? 'disabled' : ''}>›</button></div>
         <select id="mode"><option value="parallel" ${state.mode === 'parallel' ? 'selected' : ''}>Parallel</option><option value="sequential" ${state.mode === 'sequential' ? 'selected' : ''}>Sequential</option></select>
@@ -235,7 +258,7 @@ function render() {
         <button id="openHistory" class="history-button">History <span>${state.history.length}</span></button>
       </div>
       ${state.banner ? `<div class="banner">⚠ ${escapeHtml(state.banner)}<button id="closeBanner">×</button></div>` : ''}
-      ${image ? `<div class="image-heading"><div><p class="eyebrow">Source image</p><h2>${escapeHtml(image.image_id)}</h2></div><button id="selectAll">${allSelected ? 'Clear image' : 'Select all teeth'}</button></div><div class="grid-scroll">${cropCards(image)}${detail(image)}</div>` : '<div class="empty">No matching image.</div>'}
+      ${image ? `<div class="image-heading"><div><p class="eyebrow">Source image</p><h2>${escapeHtml(image.image_id)}</h2></div><button id="selectAll">${allSelected ? 'Clear image' : 'Select all teeth'}</button></div><div class="grid-scroll">${cropCards(image)}${detail(image)}${sourceOverview(image)}</div>` : '<div class="empty">No matching image.</div>'}
     </section>
     ${historyDialog()}
   </main>`
@@ -251,6 +274,11 @@ function bindEvents() {
     render()
   }
   const update = (id, key, transform = value => value) => document.querySelector(`#${id}`)?.addEventListener('input', event => { state[key] = transform(event.target.value) })
+  document.querySelector('#upload')?.addEventListener('click', () => document.querySelector('#uploadInput')?.click())
+  document.querySelector('#uploadInput')?.addEventListener('change', event => {
+    const file = event.target.files?.[0]
+    if (file) uploadImage(file)
+  })
   document.querySelector('#togglePanel')?.addEventListener('click', () => { state.leftPanelOpen = !state.leftPanelOpen; render() })
   document.querySelector('#configAccordion')?.addEventListener('toggle', event => { state.configOpen = event.currentTarget.open })
   update('prompt', 'prompt'); update('schema', 'schemaText'); update('model', 'model'); update('maxTokens', 'maxTokens', Number); update('maxEdge', 'maxEdge', Number)
@@ -284,6 +312,12 @@ function bindEvents() {
     state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id)
     render()
   }))
+  document.querySelectorAll('[data-overview-crop]').forEach(box => box.addEventListener('click', () => {
+    const id = box.dataset.overviewCrop
+    state.activeCrop = id
+    state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id)
+    render()
+  }))
   document.querySelector('#selectAll')?.addEventListener('click', () => {
     const image = currentImage()
     const clear = image.crops.every(crop => state.selected.has(crop.crop_id))
@@ -293,6 +327,36 @@ function bindEvents() {
   document.querySelector('#run')?.addEventListener('click', () => run([...state.selected]))
   document.querySelector('#stop')?.addEventListener('click', () => state.controller?.abort())
   document.querySelector('#retry')?.addEventListener('click', () => run(Object.values(state.results).filter(result => ['failed', 'parse_error'].includes(result.type)).map(result => result.crop_id)))
+}
+
+async function uploadImage(file) {
+  if (state.uploading) return
+  state.uploading = true
+  state.banner = ''
+  render()
+  try {
+    const response = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
+      body: file,
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail || `Upload failed (${response.status})`)
+    const image = { ...body.image, uploaded: true }
+    state.dataset.images.unshift(image)
+    state.dataset.image_count += 1
+    state.dataset.crop_count += image.crop_count
+    state.query = ''
+    state.imageIndex = 0
+    state.selected.clear()
+    state.activeCrop = null
+    if (!image.crop_count) state.banner = 'The tooth detector completed but found no tooth boxes.'
+  } catch (error) {
+    state.banner = error.message
+  } finally {
+    state.uploading = false
+    render()
+  }
 }
 
 function parseSseBlock(block) {
