@@ -21,17 +21,18 @@ from pydantic import BaseModel, Field, field_validator
 
 from .dataset import DatasetCatalog
 from .evaluator import evaluate_one
+from .prompts import DEFAULT_FINDING, FINDINGS, load_prompts, save_prompt
 from .settings import DEFAULT_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
 from .tooth_extractor import ToothExtractionError, extract_teeth
 
 
 catalog = DatasetCatalog()
 uploaded_sources: dict[str, tuple[Path, str]] = {}
-app = FastAPI(title="Dental Stain Prompt Lab")
+app = FastAPI(title="Dental Finding Prompt Lab")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
 
@@ -39,13 +40,13 @@ app.add_middleware(
 DEFAULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["reasoning", "stain_present"],
+    "required": ["reasoning", "verdict"],
     "properties": {
         "reasoning": {
             "type": "string",
             "description": "A detailed, coherent visual explanation supporting the verdict.",
         },
-        "stain_present": {"type": "boolean"},
+        "verdict": {"type": "string", "enum": ["present", "absent"]},
     },
 }
 
@@ -65,6 +66,7 @@ class EvaluationRequest(BaseModel):
     max_tokens: int = Field(default=800, ge=1, le=16_384)
     max_edge: int = Field(default=896, ge=128, le=4096)
     padding: float = Field(default=0.25, ge=0, le=1)
+    finding: Literal["stain", "calculus", "caries"] = DEFAULT_FINDING
     mode: Literal["sequential", "parallel"] = "parallel"
     concurrency: int = Field(default=8, ge=1, le=32)
 
@@ -78,9 +80,34 @@ class EvaluationRequest(BaseModel):
         return value
 
 
+class PromptUpdate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=50_000)
+
+
 @app.get("/dataset.json", include_in_schema=False)
 async def dataset() -> JSONResponse:
-    return JSONResponse({**catalog.payload(), "defaults": {"model": DEFAULT_MODEL, "schema": DEFAULT_SCHEMA}})
+    return JSONResponse(
+        {
+            **catalog.payload(),
+            "defaults": {
+                "model": DEFAULT_MODEL,
+                "schema": DEFAULT_SCHEMA,
+                "finding": DEFAULT_FINDING,
+                "prompts": load_prompts(),
+            },
+        }
+    )
+
+
+@app.put("/api/prompts/{finding}")
+async def update_prompt(finding: str, payload: PromptUpdate) -> JSONResponse:
+    if finding not in FINDINGS:
+        raise HTTPException(status_code=404, detail="Unknown finding")
+    try:
+        prompt = await asyncio.to_thread(save_prompt, finding, payload.prompt)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return JSONResponse({"finding": finding, "prompt": prompt})
 
 
 def _inspect_upload(contents: bytes) -> tuple[int, int, str, str]:
@@ -183,6 +210,7 @@ async def evaluate(payload: EvaluationRequest, request: Request) -> StreamingRes
                     model=payload.model,
                     prompt=payload.prompt,
                     schema=payload.schema_,
+                    finding=payload.finding,
                     max_tokens=payload.max_tokens,
                     max_edge=payload.max_edge,
                     padding=payload.padding,

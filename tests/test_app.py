@@ -14,7 +14,8 @@ client = TestClient(app)
 def test_default_schema_puts_reasoning_first() -> None:
     assert DEFAULT_SCHEMA["required"][0] == "reasoning"
     assert next(iter(DEFAULT_SCHEMA["properties"])) == "reasoning"
-    assert set(DEFAULT_SCHEMA["properties"]) == {"reasoning", "stain_present"}
+    assert set(DEFAULT_SCHEMA["properties"]) == {"reasoning", "verdict"}
+    assert DEFAULT_SCHEMA["properties"]["verdict"]["enum"] == ["present", "absent"]
 
 
 def test_page_and_static_catalog_are_served() -> None:
@@ -22,6 +23,8 @@ def test_page_and_static_catalog_are_served() -> None:
     response = client.get("/dataset.json")
     assert response.status_code == 200
     assert response.json()["image_count"] == 1090
+    assert response.json()["defaults"]["finding"] == "stain"
+    assert set(response.json()["defaults"]["prompts"]) == {"stain", "calculus", "caries"}
 
 
 def test_evaluate_rejects_unknown_server_side_crop() -> None:
@@ -41,12 +44,13 @@ def test_evaluate_streams_crop_events_without_extra_api_calls(monkeypatch) -> No
     crop_id = next(iter(catalog.crops))
 
     async def fake_evaluate(_client, crop, **kwargs):
+        assert kwargs["finding"] == "calculus"
         await kwargs["emit"]({"type": "running", "crop_id": crop.crop_id})
         await kwargs["emit"](
             {
                 "type": "completed",
                 "crop_id": crop.crop_id,
-                "result": {"stain_present": False},
+                "result": {"reasoning": "No deposit.", "verdict": "absent"},
             }
         )
 
@@ -59,6 +63,7 @@ def test_evaluate_streams_crop_events_without_extra_api_calls(monkeypatch) -> No
                 "prompt": "Evaluate",
                 "schema": {"type": "object"},
                 "model": "test/model",
+                "finding": "calculus",
             },
         )
     assert response.status_code == 200
@@ -79,6 +84,17 @@ def test_evaluate_rejects_invalid_json_schema() -> None:
         },
     )
     assert response.status_code == 422
+
+
+def test_prompt_update_uses_fixed_finding_and_returns_saved_text() -> None:
+    with patch("backend.app.save_prompt", return_value="Updated prompt") as mocked_save:
+        response = client.put("/api/prompts/caries", json={"prompt": " Updated prompt "})
+    assert response.status_code == 200
+    assert response.json() == {"finding": "caries", "prompt": "Updated prompt"}
+    mocked_save.assert_called_once_with("caries", " Updated prompt ")
+
+    response = client.put("/api/prompts/not-a-mode", json={"prompt": "Anything"})
+    assert response.status_code == 404
 
 
 def test_upload_registers_detected_teeth_from_raw_image(tmp_path, monkeypatch) -> None:

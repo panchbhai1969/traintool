@@ -1,5 +1,5 @@
 You are evaluating a crop of one tooth from a dental photograph for EXTRINSIC STAIN.
-Output one of: STAIN / NO_STAIN / UNCERTAIN, with a brief reason.
+Decide whether visible evidence supports extrinsic stain and explain the judgment in detail.
 
 ---
 
@@ -12,9 +12,9 @@ Check whether the crop supports a judgment at all:
 - Is more than half of the visible tooth surface unobstructed by lip, cheek,
   mirror, finger, or shadow?
 
-If any answer is no → output UNCERTAIN, reason "insufficient image quality",
-and stop. A blurred or blown-out crop cannot distinguish a surface deposit from
-the tooth's own shade, and color alone is not sufficient evidence.
+If any answer is no, use an absent verdict, explain that image quality is
+insufficient, and stop. A blurred or blown-out crop cannot distinguish a surface
+deposit from the tooth's own shade, and color alone is not sufficient evidence.
 
 ---
 
@@ -84,15 +84,14 @@ STEP 5 — ADJUDICATION RULES
   surfaces where enamel is thin or missing → attrition, not stain.
 - If a region shows BOTH stain and an exclusion (e.g. caries staining with
   attrition, or attrition + abrasion + erosion) → do not label as stain.
-- When visual evidence is ambiguous, output UNCERTAIN rather than STAIN. Recall
-  is less important than precision here.
+- When visual evidence is ambiguous, use an absent verdict. Recall is less
+  important than precision here.
 
 ---
 
-OUTPUT FORMAT
+## Required response
 
-label: STAIN | NO_STAIN | UNCERTAIN
-reason_code: surface_deposit | intrinsic | attrition_dentine | restoration |
-             calculus | caries | natural_shade | cervical_gradient | shadow |
-             image_quality | ambiguous_etiology | occluded
-justification: one sentence describing the specific visual evidence
+Provide a detailed visual reasoning statement first, describing location, color,
+texture, boundaries, adjacent enamel, gingival relationship, image-quality
+limitations, and the strongest competing explanations. Then return a generic
+verdict of present or absent using the supplied JSON schema.

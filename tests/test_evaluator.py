@@ -11,28 +11,29 @@ from backend.evaluator import _prepare_crop, _source_image, build_openrouter_pay
 
 SCHEMA = {
     "type": "object",
-    "required": ["stain_present"],
-    "properties": {"stain_present": {"type": "boolean"}},
+    "required": ["verdict"],
+    "properties": {"verdict": {"type": "string", "enum": ["present", "absent"]}},
 }
 
 
 def test_parser_accepts_json_and_markdown_fence() -> None:
-    expected = {"stain_present": True}
+    expected = {"verdict": "present"}
     assert parse_and_validate(json.dumps(expected), SCHEMA) == expected
-    assert parse_and_validate("```json\n{\"stain_present\": true}\n```", SCHEMA) == expected
-    assert parse_and_validate("```\n{\"stain_present\": true}\n```", SCHEMA) == expected
+    assert parse_and_validate('```json\n{"verdict":"present"}\n```', SCHEMA) == expected
+    assert parse_and_validate('```\n{"verdict":"present"}\n```', SCHEMA) == expected
 
 
 def test_parser_rejects_schema_mismatch() -> None:
     with pytest.raises(ValidationError):
-        parse_and_validate('{"stain_present":"yes"}', SCHEMA)
+        parse_and_validate('{"verdict":"uncertain"}', SCHEMA)
 
 
 def test_system_prompt_requests_explanation_before_verdict() -> None:
-    prompt = build_system_prompt("Evaluate", {"type": "object"})
-    assert prompt.index("explanation first") < prompt.index("stain-present verdict")
+    prompt = build_system_prompt("Evaluate", {"type": "object"}, "caries")
+    assert prompt.index("explanation first") < prompt.index("present-or-absent verdict")
     assert "adjacent enamel" in prompt
     assert "image-quality limitations" in prompt
+    assert "for caries" in prompt
     assert prompt.endswith('{"type":"object"}')
 
 

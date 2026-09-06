@@ -96,14 +96,14 @@ def parse_and_validate(raw: str, schema: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
-def build_system_prompt(prompt: str, schema: dict[str, Any]) -> str:
+def build_system_prompt(prompt: str, schema: dict[str, Any], finding: str) -> str:
     schema_text = json.dumps(schema, separators=(",", ":"))
     return (
         f"{prompt}\n\n"
         "When the schema contains a reasoning field, write a detailed, coherent visual explanation first. "
-        "Describe the observed color, location, texture, boundaries, relationship to adjacent enamel and the gingival margin, "
-        "relevant image-quality limitations, and why plausible look-alikes such as shadow, calculus, restoration margins, or caries are more or less likely. "
-        "Then provide the stain-present verdict. "
+        "Describe the observed color, location, opacity, texture, boundaries, surface contour and integrity, relationship to adjacent enamel and the gingival margin, "
+        "relevant image-quality limitations, and why plausible alternative explanations are more or less likely. "
+        f"Then provide the present-or-absent verdict for {finding}. "
         "Base the explanation only on visible evidence and use multiple sentences where useful.\n\n"
         f"Return only JSON matching this JSON Schema:\n{schema_text}"
     )
@@ -127,6 +127,7 @@ async def evaluate_one(
     model: str,
     prompt: str,
     schema: dict[str, Any],
+    finding: str,
     max_tokens: int,
     max_edge: int,
     padding: float,
@@ -140,12 +141,12 @@ async def evaluate_one(
         messages = [
             {
                 "role": "system",
-                "content": build_system_prompt(prompt, schema),
+                "content": build_system_prompt(prompt, schema, finding),
             },
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Evaluate this individual tooth crop."},
+                    {"type": "text", "text": f"Evaluate this individual tooth crop for {finding}."},
                     {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             },

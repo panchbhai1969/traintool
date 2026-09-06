@@ -1,6 +1,6 @@
-# Dental Stain Prompt Lab
+# Dental Finding Prompt Lab
 
-A local prompt-engineering interface for comparing OpenRouter vision-model verdicts across precomputed individual-tooth boxes.
+A local prompt-engineering interface for comparing OpenRouter vision-model verdicts for stain, calculus, and caries across individual-tooth boxes.
 
 ## Setup
 
@@ -20,7 +20,9 @@ The backend reads configuration from `../.env` first and an optional local `.env
 
 Open <http://localhost:8000>. Use **Upload image** to send one JPEG, PNG, or WebP image to the tooth detector. Detected tooth crops appear without being selected or evaluated automatically. Uploads are temporary browser-session additions and are not restored after a refresh.
 
-The application APIs are `POST /api/images/upload` for raw image bytes and `POST /api/evaluate` for LLM evaluation. The URL-encoded upload filename is passed in the `X-Filename` header. Dataset content is served as a static page resource at `/dataset.json`.
+Select **Stain**, **Calculus**, or **Caries** before running an evaluation. Their prompts are loaded from `stain.md`, `calculus.md`, and `caries.md`. Prompt edits are persisted to the selected file only when **Save prompt** is clicked.
+
+The application APIs are `POST /api/images/upload` for raw image bytes, `POST /api/evaluate` for LLM evaluation, and `PUT /api/prompts/{finding}` for prompt updates. The URL-encoded upload filename is passed in the `X-Filename` header. Dataset content and prompt defaults are served at `/dataset.json`.
 
 The **History** button shows session-only run summaries grouped by source image. Parallel crop costs are summed into one entry with the image ID and number of calls. History is intentionally cleared when the page is refreshed.
 

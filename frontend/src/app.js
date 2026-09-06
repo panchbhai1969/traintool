@@ -5,7 +5,11 @@ const state = {
   selected: new Set(),
   results: {},
   activeCrop: null,
-  prompt: 'You are evaluating a crop of one tooth from a dental photograph for extrinsic stain. Use adjacent enamel and the gingival margin as context. Distinguish stain from shadow, calculus, restoration margins, and caries. Be conservative when visual evidence is ambiguous.',
+  finding: 'stain',
+  prompts: {},
+  prompt: '',
+  promptDirty: false,
+  promptSaveStatus: 'Saved',
   schemaText: '',
   model: '',
   maxTokens: 800,
@@ -28,6 +32,15 @@ const root = document.querySelector('#root')
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character])
+}
+
+function findingLabel(finding = state.finding) {
+  return finding.charAt(0).toUpperCase() + finding.slice(1)
+}
+
+function resultVerdict(event) {
+  if (event?.type !== 'completed') return null
+  return ['present', 'absent'].includes(event.result?.verdict) ? event.result.verdict : null
 }
 
 function images() {
@@ -60,7 +73,8 @@ function cropSvg(image, crop) {
 
 function resultClass(event) {
   if (!event) return ''
-  if (event.type === 'completed') return event.result?.stain_present ? 'positive' : 'negative'
+  if (resultVerdict(event) === 'present') return 'positive'
+  if (resultVerdict(event) === 'absent') return 'negative'
   if (event.type === 'failed' || event.type === 'parse_error') return 'errored'
   if (['running', 'queued', 'rate_limited'].includes(event.type)) return 'working'
   return ''
@@ -70,18 +84,20 @@ function cropCards(image) {
   if (!image.crops.length) return '<div class="no-crops"><h3>No tooth boxes detected</h3><p class="muted">The source image is shown below.</p></div>'
   return `<div class="crop-grid">${image.crops.map((crop, index) => {
     const event = state.results[crop.crop_id]
+    const verdict = resultVerdict(event)
     return `<article class="crop-card ${state.selected.has(crop.crop_id) ? 'selected' : ''} ${resultClass(event)}" data-crop="${escapeHtml(crop.crop_id)}">
       <div class="crop-frame">${cropSvg(image, crop)}</div>
       <div class="crop-meta"><span>Tooth ${index + 1}</span><span class="status">${escapeHtml(event?.type?.replace('_', ' ') || 'ready')}</span></div>
-      ${event?.result ? `<div class="verdict"><b>${event.result.stain_present ? 'Stain' : 'Clear'}</b></div>` : ''}
+      ${verdict ? `<div class="verdict"><b>${verdict === 'present' ? `${findingLabel()} present` : `No ${state.finding}`}</b></div>` : ''}
     </article>`
   }).join('')}</div>`
 }
 
 function detectionClass(crop) {
-  const event = state.results[crop.crop_id]
-  if (event?.type !== 'completed') return 'undecided'
-  return event.result?.stain_present ? 'stain' : 'clear'
+  const verdict = resultVerdict(state.results[crop.crop_id])
+  if (verdict === 'present') return 'finding-present'
+  if (verdict === 'absent') return 'finding-absent'
+  return 'undecided'
 }
 
 function sourceOverview(image) {
@@ -93,7 +109,7 @@ function sourceOverview(image) {
     title="Tooth ${index + 1}"
   ><span>${index + 1}</span></button>`).join('')
   return `<section class="source-overview">
-    <div class="source-overview-heading"><div><p class="eyebrow">Full source image</p><h3>Detection overview</h3></div><div class="detection-legend"><span class="stain">Stain</span><span class="clear">Clear</span><span class="undecided">Not decided</span></div></div>
+    <div class="source-overview-heading"><div><p class="eyebrow">Full source image</p><h3>${findingLabel()} detection overview</h3></div><div class="detection-legend"><span class="finding-present">Present</span><span class="finding-absent">Absent</span><span class="undecided">Not decided</span></div></div>
     <div class="annotated-source"><img src="${escapeHtml(image.image_url)}" alt="Full dental source image"/>${boxes}</div>
   </section>`
 }
@@ -106,7 +122,8 @@ function detail(image) {
   const orderedResult = result?.reasoning === undefined ? result : { reasoning: result.reasoning, ...Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'reasoning')) }
   const body = event ? JSON.stringify(orderedResult || { error: event.error, raw: event.raw }, null, 2) : ''
   const explanation = result?.reasoning == null ? '' : `<div class="explanation"><span>Explanation</span><p>${escapeHtml(result.reasoning)}</p></div>`
-  const verdict = result ? `<div class="detail-verdict"><span>Verdict</span><b>${result.stain_present ? 'Stain present' : 'No stain'}</b></div>` : ''
+  const decided = resultVerdict(event)
+  const verdict = decided ? `<div class="detail-verdict"><span>Verdict</span><b>${decided === 'present' ? `${findingLabel()} present` : `No ${state.finding}`}</b></div>` : ''
   return `<section class="detail"><div class="detail-image">${cropSvg(image, crop)}</div><div>
     <p class="eyebrow">Selected tooth</p><h3>${escapeHtml(crop.crop_id)}</h3>
     ${event ? `${explanation}${verdict}<div class="metrics"><span>${event.latency_ms ? `${event.latency_ms} ms` : '—'}</span><span>${event.prompt_tokens ?? '—'} prompt tokens</span><span>${event.completion_tokens ?? '—'} completion tokens</span><span>${event.cost != null ? `$${event.cost}` : 'cost unavailable'}</span></div><pre>${escapeHtml(body)}</pre>` : '<p class="muted">Run this crop to inspect its structured response.</p>'}
@@ -122,11 +139,11 @@ function formatCost(entry) {
 function historyRows() {
   if (!state.history.length) return '<div class="history-empty">No runs in this session yet.</div>'
   return `<div class="history-table-wrap"><table class="history-table">
-    <thead><tr><th>Time</th><th>Image ID</th><th>Model / mode</th><th>Calls</th><th>Results</th><th>Total cost</th><th>Status</th></tr></thead>
+    <thead><tr><th>Time</th><th>Image ID</th><th>Finding / model / execution</th><th>Calls</th><th>Results</th><th>Total cost</th><th>Status</th></tr></thead>
     <tbody>${state.history.map(entry => `<tr>
       <td>${escapeHtml(new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</td>
       <td class="history-image">${escapeHtml(entry.imageId)}</td>
-      <td><span class="history-model">${escapeHtml(entry.model)}</span><small>${escapeHtml(entry.mode)}${entry.mode === 'parallel' ? ` · ${entry.concurrency} workers` : ''}</small></td>
+      <td><b class="history-finding">${escapeHtml(findingLabel(entry.finding))}</b><span class="history-model">${escapeHtml(entry.model)}</span><small>${escapeHtml(entry.mode)}${entry.mode === 'parallel' ? ` · ${entry.concurrency} workers` : ''}</small></td>
       <td><b>${entry.calls}</b></td>
       <td><span class="history-ok">${entry.completed} completed</span>${entry.parseErrors ? `<span class="history-warn">${entry.parseErrors} parse errors</span>` : ''}${entry.failed ? `<span class="history-bad">${entry.failed} failed</span>` : ''}${entry.cancelled ? `<span class="history-muted">${entry.cancelled} cancelled</span>` : ''}</td>
       <td class="history-cost">${escapeHtml(formatCost(entry))}</td>
@@ -167,6 +184,7 @@ function beginHistory(cropIds) {
       runId,
       imageId,
       timestamp,
+      finding: state.finding,
       model: state.model,
       mode: state.mode,
       concurrency: state.mode === 'sequential' ? 1 : state.concurrency,
@@ -229,11 +247,12 @@ function render() {
     <aside class="editor-panel">
       <button id="togglePanel" class="panel-toggle" aria-label="${state.leftPanelOpen ? 'Collapse' : 'Expand'} settings panel" title="${state.leftPanelOpen ? 'Collapse' : 'Expand'} settings">${state.leftPanelOpen ? '‹' : '›'}</button>
       <div class="editor-content">
-        <header><p class="eyebrow">Evaluation workspace</p><h1>Stain Prompt Lab</h1><p class="muted">${state.dataset.image_count.toLocaleString()} images · ${state.dataset.crop_count.toLocaleString()} tooth boxes</p></header>
+        <header><p class="eyebrow">Evaluation workspace</p><h1>Dental Finding Lab</h1><p class="muted">${state.dataset.image_count.toLocaleString()} images · ${state.dataset.crop_count.toLocaleString()} tooth boxes</p></header>
         <details id="configAccordion" class="config-accordion" ${state.configOpen ? 'open' : ''}>
           <summary><span>Prompt & model settings</span><small>${escapeHtml(state.model)}</small></summary>
           <div class="config-content">
             <label>System prompt<textarea id="prompt" class="prompt">${escapeHtml(state.prompt)}</textarea></label>
+            <div class="prompt-actions"><span id="promptSaveStatus" class="prompt-save-status ${state.promptDirty ? 'dirty' : ''}">${escapeHtml(state.promptSaveStatus)}</span><button id="savePrompt" ${!state.promptDirty || state.promptSaveStatus === 'Saving…' || state.running ? 'disabled' : ''}>Save ${escapeHtml(findingLabel())} prompt</button></div>
             <label>Output schema<textarea id="schema" class="schema" spellcheck="false">${escapeHtml(state.schemaText)}</textarea></label>
             <div class="settings-grid">
               <label class="wide">Model ID<input id="model" value="${escapeHtml(state.model)}" /></label>
@@ -249,6 +268,7 @@ function render() {
       <div class="toolbar">
         <button id="upload" ${state.uploading ? 'disabled' : ''}>${state.uploading ? 'Detecting teeth…' : '↑ Upload image'}</button>
         <input id="uploadInput" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+        <label class="finding-control">Finding <select id="finding" ${state.running ? 'disabled' : ''}><option value="stain" ${state.finding === 'stain' ? 'selected' : ''}>Stain</option><option value="calculus" ${state.finding === 'calculus' ? 'selected' : ''}>Calculus</option><option value="caries" ${state.finding === 'caries' ? 'selected' : ''}>Caries</option></select></label>
         <div class="search"><span>⌕</span><input id="search" placeholder="Find image ID" value="${escapeHtml(state.query)}" /></div>
         <div class="pager"><button id="previous" ${state.imageIndex === 0 ? 'disabled' : ''}>‹</button><span>${available.length ? state.imageIndex + 1 : 0} / ${available.length}</span><button id="next" ${state.imageIndex >= available.length - 1 ? 'disabled' : ''}>›</button></div>
         <select id="mode"><option value="parallel" ${state.mode === 'parallel' ? 'selected' : ''}>Parallel</option><option value="sequential" ${state.mode === 'sequential' ? 'selected' : ''}>Sequential</option></select>
@@ -281,7 +301,17 @@ function bindEvents() {
   })
   document.querySelector('#togglePanel')?.addEventListener('click', () => { state.leftPanelOpen = !state.leftPanelOpen; render() })
   document.querySelector('#configAccordion')?.addEventListener('toggle', event => { state.configOpen = event.currentTarget.open })
-  update('prompt', 'prompt'); update('schema', 'schemaText'); update('model', 'model'); update('maxTokens', 'maxTokens', Number); update('maxEdge', 'maxEdge', Number)
+  document.querySelector('#prompt')?.addEventListener('input', event => {
+    state.prompt = event.target.value
+    state.promptDirty = state.prompt !== state.prompts[state.finding]
+    state.promptSaveStatus = state.promptDirty ? 'Unsaved changes' : 'Saved'
+    const status = document.querySelector('#promptSaveStatus')
+    const button = document.querySelector('#savePrompt')
+    if (status) { status.textContent = state.promptSaveStatus; status.classList.toggle('dirty', state.promptDirty) }
+    if (button) button.disabled = !state.promptDirty || state.running
+  })
+  document.querySelector('#savePrompt')?.addEventListener('click', saveCurrentPrompt)
+  update('schema', 'schemaText'); update('model', 'model'); update('maxTokens', 'maxTokens', Number); update('maxEdge', 'maxEdge', Number)
   document.querySelector('#padding')?.addEventListener('change', event => { state.padding = Number(event.target.value); render() })
   document.querySelector('#search')?.addEventListener('input', event => {
     state.query = event.target.value
@@ -293,6 +323,20 @@ function bindEvents() {
     const input = document.querySelector('#search')
     input?.focus()
     input?.setSelectionRange(caret, caret)
+  })
+  document.querySelector('#finding')?.addEventListener('change', event => {
+    const nextFinding = event.target.value
+    if (state.promptDirty && !globalThis.confirm(`Discard unsaved changes to the ${state.finding} prompt?`)) {
+      event.target.value = state.finding
+      return
+    }
+    state.finding = nextFinding
+    state.prompt = state.prompts[nextFinding]
+    state.promptDirty = false
+    state.promptSaveStatus = 'Saved'
+    state.results = {}
+    state.banner = ''
+    render()
   })
   document.querySelector('#mode')?.addEventListener('change', event => { state.mode = event.target.value; render() })
   document.querySelector('#concurrency')?.addEventListener('change', event => { state.concurrency = Number(event.target.value); render() })
@@ -327,6 +371,34 @@ function bindEvents() {
   document.querySelector('#run')?.addEventListener('click', () => run([...state.selected]))
   document.querySelector('#stop')?.addEventListener('click', () => state.controller?.abort())
   document.querySelector('#retry')?.addEventListener('click', () => run(Object.values(state.results).filter(result => ['failed', 'parse_error'].includes(result.type)).map(result => result.crop_id)))
+}
+
+async function saveCurrentPrompt() {
+  if (!state.promptDirty || state.running || state.promptSaveStatus === 'Saving…') return
+  const finding = state.finding
+  const prompt = state.prompt
+  state.promptSaveStatus = 'Saving…'
+  render()
+  try {
+    const response = await fetch(`/api/prompts/${finding}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail || `Prompt save failed (${response.status})`)
+    state.prompts[finding] = body.prompt
+    if (state.finding === finding) {
+      state.prompt = body.prompt
+      state.promptDirty = false
+      state.promptSaveStatus = 'Saved'
+    }
+  } catch (error) {
+    state.promptSaveStatus = 'Save failed'
+    state.banner = error.message
+  } finally {
+    render()
+  }
 }
 
 async function uploadImage(file) {
@@ -378,7 +450,7 @@ async function run(cropIds) {
   try {
     const response = await fetch('/api/evaluate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency }),
+      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, finding: state.finding, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency }),
     })
     if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Evaluation failed (${response.status})`) }
     if (!response.body) throw new Error('Streaming is unavailable in this browser')
@@ -421,6 +493,9 @@ fetch('/dataset.json').then(response => {
 }).then(dataset => {
   state.dataset = dataset
   state.model = dataset.defaults.model
+  state.finding = dataset.defaults.finding
+  state.prompts = dataset.defaults.prompts
+  state.prompt = state.prompts[state.finding]
   state.schemaText = JSON.stringify(dataset.defaults.schema, null, 2)
   render()
 }).catch(error => { root.innerHTML = `<main class="center-error">⚠ ${escapeHtml(error.message)}</main>` })
