@@ -4,6 +4,7 @@ const state = {
   imageIndex: 0,
   selected: new Set(),
   results: {},
+  enhanced: {},
   activeCrop: null,
   finding: 'stain',
   prompts: {},
@@ -71,6 +72,21 @@ function cropSvg(image, crop) {
   return `<svg class="crop-image" viewBox="${x} ${y} ${width} ${height}" role="img" aria-label="Tooth crop"><rect width="${crop.original_width}" height="${crop.original_height}" fill="#777"/><image href="${escapeHtml(image.image_url)}" width="${crop.original_width}" height="${crop.original_height}" preserveAspectRatio="none"/></svg>`
 }
 
+function cropVisual(image, crop) {
+  const enhanced = state.enhanced[crop.crop_id]
+  if (enhanced?.status === 'ready' && enhanced.shown) {
+    return `<img class="crop-image" src="${enhanced.image}" alt="Enhanced tooth crop" />`
+  }
+  return cropSvg(image, crop)
+}
+
+function enhanceLabel(enhanced) {
+  if (enhanced?.status === 'loading') return 'Enhancing…'
+  if (enhanced?.status === 'failed') return 'Retry enhance'
+  if (enhanced?.status === 'ready') return enhanced.shown ? 'Show original' : 'Show enhanced'
+  return '✨ Enhance'
+}
+
 function resultClass(event) {
   if (!event) return ''
   if (resultVerdict(event) === 'present') return 'positive'
@@ -84,10 +100,12 @@ function cropCards(image) {
   if (!image.crops.length) return '<div class="no-crops"><h3>No tooth boxes detected</h3><p class="muted">The source image is shown below.</p></div>'
   return `<div class="crop-grid">${image.crops.map((crop, index) => {
     const event = state.results[crop.crop_id]
+    const enhanced = state.enhanced[crop.crop_id]
     const verdict = resultVerdict(event)
     return `<article class="crop-card ${state.selected.has(crop.crop_id) ? 'selected' : ''} ${resultClass(event)}" data-crop="${escapeHtml(crop.crop_id)}">
-      <div class="crop-frame">${cropSvg(image, crop)}</div>
+      <div class="crop-frame">${cropVisual(image, crop)}</div>
       <div class="crop-meta"><span>Tooth ${index + 1}</span><span class="status">${escapeHtml(event?.type?.replace('_', ' ') || 'ready')}</span></div>
+      <div class="crop-actions"><button class="enhance-btn ${enhanced?.status || ''}" data-enhance="${escapeHtml(crop.crop_id)}" ${enhanced?.status === 'loading' ? 'disabled' : ''}>${enhanceLabel(enhanced)}</button></div>
       ${verdict ? `<div class="verdict"><b>${verdict === 'present' ? `${findingLabel()} present` : `No ${state.finding}`}</b></div>` : ''}
     </article>`
   }).join('')}</div>`
@@ -124,7 +142,7 @@ function detail(image) {
   const explanation = result?.reasoning == null ? '' : `<div class="explanation"><span>Explanation</span><p>${escapeHtml(result.reasoning)}</p></div>`
   const decided = resultVerdict(event)
   const verdict = decided ? `<div class="detail-verdict"><span>Verdict</span><b>${decided === 'present' ? `${findingLabel()} present` : `No ${state.finding}`}</b></div>` : ''
-  return `<section class="detail"><div class="detail-image">${cropSvg(image, crop)}</div><div>
+  return `<section class="detail"><div class="detail-image">${cropVisual(image, crop)}</div><div>
     <p class="eyebrow">Selected tooth</p><h3>${escapeHtml(crop.crop_id)}</h3>
     ${event ? `${explanation}${verdict}<div class="metrics"><span>${event.latency_ms ? `${event.latency_ms} ms` : '—'}</span><span>${event.prompt_tokens ?? '—'} prompt tokens</span><span>${event.completion_tokens ?? '—'} completion tokens</span><span>${event.cost != null ? `$${event.cost}` : 'cost unavailable'}</span></div><pre>${escapeHtml(body)}</pre>` : '<p class="muted">Run this crop to inspect its structured response.</p>'}
   </div></section>`
@@ -136,19 +154,43 @@ function formatCost(entry) {
   return entry.missingCost ? `${amount} · ${entry.missingCost} unavailable` : amount
 }
 
+function historyTime(entry) {
+  return escapeHtml(new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
+}
+
+function evalHistoryRow(entry) {
+  return `<tr>
+    <td>${historyTime(entry)}</td>
+    <td class="history-image">${escapeHtml(entry.imageId)}</td>
+    <td><b class="history-finding">${escapeHtml(findingLabel(entry.finding))}</b><span class="history-model">${escapeHtml(entry.model)}</span><small>${escapeHtml(entry.mode)}${entry.mode === 'parallel' ? ` · ${entry.concurrency} workers` : ''}</small></td>
+    <td><b>${entry.calls}</b></td>
+    <td><span class="history-ok">${entry.completed} completed</span>${entry.parseErrors ? `<span class="history-warn">${entry.parseErrors} parse errors</span>` : ''}${entry.failed ? `<span class="history-bad">${entry.failed} failed</span>` : ''}${entry.cancelled ? `<span class="history-muted">${entry.cancelled} cancelled</span>` : ''}</td>
+    <td class="history-cost">${escapeHtml(formatCost(entry))}</td>
+    <td><span class="history-status ${entry.status}">${escapeHtml(entry.status)}</span></td>
+  </tr>`
+}
+
+function enhanceHistoryRow(entry) {
+  const meta = [
+    entry.latencyMs != null ? `${(entry.latencyMs / 1000).toFixed(1)}s` : '',
+    entry.imageTokens != null ? `${entry.imageTokens} image tokens` : '',
+  ].filter(Boolean).join(' · ')
+  return `<tr>
+    <td>${historyTime(entry)}</td>
+    <td class="history-image" title="${escapeHtml(entry.cropId)}">${escapeHtml(entry.imageId)}</td>
+    <td><b class="history-finding">Enhance</b><span class="history-model">${escapeHtml(entry.model || '—')}</span><small>${escapeHtml(meta)}</small></td>
+    <td><b>1</b></td>
+    <td>${entry.completed ? '<span class="history-ok">1 enhanced</span>' : `<span class="history-bad">1 failed</span>`}</td>
+    <td class="history-cost">${escapeHtml(formatCost(entry))}</td>
+    <td><span class="history-status ${entry.status}">${escapeHtml(entry.status)}</span></td>
+  </tr>`
+}
+
 function historyRows() {
   if (!state.history.length) return '<div class="history-empty">No runs in this session yet.</div>'
   return `<div class="history-table-wrap"><table class="history-table">
-    <thead><tr><th>Time</th><th>Image ID</th><th>Finding / model / execution</th><th>Calls</th><th>Results</th><th>Total cost</th><th>Status</th></tr></thead>
-    <tbody>${state.history.map(entry => `<tr>
-      <td>${escapeHtml(new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</td>
-      <td class="history-image">${escapeHtml(entry.imageId)}</td>
-      <td><b class="history-finding">${escapeHtml(findingLabel(entry.finding))}</b><span class="history-model">${escapeHtml(entry.model)}</span><small>${escapeHtml(entry.mode)}${entry.mode === 'parallel' ? ` · ${entry.concurrency} workers` : ''}</small></td>
-      <td><b>${entry.calls}</b></td>
-      <td><span class="history-ok">${entry.completed} completed</span>${entry.parseErrors ? `<span class="history-warn">${entry.parseErrors} parse errors</span>` : ''}${entry.failed ? `<span class="history-bad">${entry.failed} failed</span>` : ''}${entry.cancelled ? `<span class="history-muted">${entry.cancelled} cancelled</span>` : ''}</td>
-      <td class="history-cost">${escapeHtml(formatCost(entry))}</td>
-      <td><span class="history-status ${entry.status}">${escapeHtml(entry.status)}</span></td>
-    </tr>`).join('')}</tbody>
+    <thead><tr><th>Time</th><th>Image ID</th><th>Task / model / execution</th><th>Calls</th><th>Results</th><th>Total cost</th><th>Status</th></tr></thead>
+    <tbody>${state.history.map(entry => entry.kind === 'enhance' ? enhanceHistoryRow(entry) : evalHistoryRow(entry)).join('')}</tbody>
   </table></div>`
 }
 
@@ -156,7 +198,7 @@ function historyDialog() {
   return `<dialog id="historyDialog" class="history-dialog">
     <div class="history-heading"><div><p class="eyebrow">Current browser session</p><h2>Run history</h2><p class="muted">Costs are summed from OpenRouter's per-call usage details.</p></div><button id="closeHistory" class="dialog-close" aria-label="Close">×</button></div>
     ${historyRows()}
-    <div class="history-footer"><span>${state.history.length} image run${state.history.length === 1 ? '' : 's'}</span><button id="clearHistory" ${state.history.length ? '' : 'disabled'}>Clear history</button></div>
+    <div class="history-footer"><span>${state.history.length} ${state.history.length === 1 ? 'entry' : 'entries'}</span><button id="clearHistory" ${state.history.length ? '' : 'disabled'}>Clear history</button></div>
   </dialog>`
 }
 
@@ -165,6 +207,31 @@ function imageIdForCrop(cropId) {
     if (image.crops.some(crop => crop.crop_id === cropId)) return image.image_id
   }
   return 'unknown'
+}
+
+function recordEnhanceHistory(cropId, { ok, body = {}, clientMs, error } = {}) {
+  const usage = body.usage || {}
+  const cost = Number(usage.cost)
+  const hasCost = ok && usage.cost != null && Number.isFinite(cost)
+  state.history.unshift({
+    id: `enhance:${cropId}:${Date.now()}`,
+    kind: 'enhance',
+    timestamp: new Date().toISOString(),
+    imageId: imageIdForCrop(cropId),
+    cropId,
+    model: body.model || '',
+    latencyMs: body.latency_ms ?? clientMs ?? null,
+    imageTokens: usage.image_tokens ?? usage.completion_tokens ?? null,
+    calls: 1,
+    completed: ok ? 1 : 0,
+    parseErrors: 0,
+    failed: ok ? 0 : 1,
+    cancelled: 0,
+    cost: hasCost ? cost : 0,
+    missingCost: hasCost ? 0 : 1,
+    status: ok ? 'completed' : 'failed',
+    error: error || null,
+  })
 }
 
 function beginHistory(cropIds) {
@@ -335,6 +402,7 @@ function bindEvents() {
     state.promptDirty = false
     state.promptSaveStatus = 'Saved'
     state.results = {}
+    state.enhanced = {}
     state.banner = ''
     render()
   })
@@ -355,6 +423,10 @@ function bindEvents() {
     state.activeCrop = id
     state.selected.has(id) ? state.selected.delete(id) : state.selected.add(id)
     render()
+  }))
+  document.querySelectorAll('[data-enhance]').forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation()
+    enhanceOrToggle(button.dataset.enhance)
   }))
   document.querySelectorAll('[data-overview-crop]').forEach(box => box.addEventListener('click', () => {
     const id = box.dataset.overviewCrop
@@ -431,6 +503,37 @@ async function uploadImage(file) {
   }
 }
 
+async function enhanceOrToggle(cropId) {
+  const current = state.enhanced[cropId]
+  if (current?.status === 'loading') return
+  if (current?.status === 'ready') {
+    current.shown = !current.shown
+    render()
+    return
+  }
+  state.enhanced[cropId] = { status: 'loading', shown: false }
+  state.banner = ''
+  render()
+  const startedAt = performance.now()
+  try {
+    const response = await fetch(`/api/crops/${encodeURIComponent(cropId)}/enhance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ padding: state.padding, max_edge: state.maxEdge }),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail || `Enhance failed (${response.status})`)
+    state.enhanced[cropId] = { status: 'ready', image: body.image, shown: true }
+    recordEnhanceHistory(cropId, { ok: true, body, clientMs: Math.round(performance.now() - startedAt) })
+  } catch (error) {
+    state.enhanced[cropId] = { status: 'failed', shown: false, error: error.message }
+    state.banner = error.message
+    recordEnhanceHistory(cropId, { ok: false, error: error.message })
+  } finally {
+    render()
+  }
+}
+
 function parseSseBlock(block) {
   const data = block.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n')
   return data ? JSON.parse(data) : null
@@ -443,6 +546,11 @@ async function run(cropIds) {
   state.banner = ''
   state.running = true
   cropIds.forEach(id => { state.results[id] = { type: 'queued', crop_id: id } })
+  const enhanced = {}
+  cropIds.forEach(id => {
+    const entry = state.enhanced[id]
+    if (entry?.status === 'ready' && entry.shown) enhanced[id] = entry.image
+  })
   const historyContext = beginHistory(cropIds)
   const controller = new AbortController()
   state.controller = controller
@@ -450,7 +558,7 @@ async function run(cropIds) {
   try {
     const response = await fetch('/api/evaluate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, finding: state.finding, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency }),
+      body: JSON.stringify({ crop_ids: cropIds, prompt: state.prompt, schema, model: state.model, finding: state.finding, max_tokens: state.maxTokens, max_edge: state.maxEdge, padding: state.padding, mode: state.mode, concurrency: state.concurrency, enhanced }),
     })
     if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Evaluation failed (${response.status})`) }
     if (!response.body) throw new Error('Streaming is unavailable in this browser')

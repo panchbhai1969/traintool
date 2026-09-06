@@ -24,6 +24,13 @@ Select **Stain**, **Calculus**, or **Caries** before running an evaluation. Thei
 
 The application APIs are `POST /api/images/upload` for raw image bytes, `POST /api/evaluate` for LLM evaluation, and `PUT /api/prompts/{finding}` for prompt updates. The URL-encoded upload filename is passed in the `X-Filename` header. Dataset content and prompt defaults are served at `/dataset.json`.
 
+Each crop tile has an **Enhance** button. The first click sends that crop to the
+`ENHANCE_MODEL` (default `openai/gpt-image-2`) with the `ENHANCE_PROMPT` (default
+"enhance the image") via `POST /api/crops/{crop_id}/enhance` and shows the
+returned image; later clicks toggle the tile between original and enhanced. A tile
+showing its enhanced image is evaluated on that image. Enhanced images are held in
+the browser session only.
+
 The **History** button shows session-only run summaries grouped by source image. Parallel crop costs are summed into one entry with the image ID and number of calls. History is intentionally cleared when the page is refreshed.
 
 ## Tests

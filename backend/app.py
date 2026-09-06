@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -20,9 +21,10 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from .dataset import DatasetCatalog
+from .enhancer import EnhancementError, enhance_crop_image
 from .evaluator import evaluate_one
 from .prompts import DEFAULT_FINDING, FINDINGS, load_prompts, save_prompt
-from .settings import DEFAULT_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
+from .settings import DEFAULT_MODEL, ENHANCE_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
 from .tooth_extractor import ToothExtractionError, extract_teeth
 
 
@@ -69,6 +71,7 @@ class EvaluationRequest(BaseModel):
     finding: Literal["stain", "calculus", "caries"] = DEFAULT_FINDING
     mode: Literal["sequential", "parallel"] = "parallel"
     concurrency: int = Field(default=8, ge=1, le=32)
+    enhanced: dict[str, str] = Field(default_factory=dict, max_length=250)
 
     @field_validator("schema_")
     @classmethod
@@ -79,9 +82,24 @@ class EvaluationRequest(BaseModel):
             raise ValueError(f"Invalid JSON Schema: {error.message}") from error
         return value
 
+    @field_validator("enhanced")
+    @classmethod
+    def valid_enhanced(cls, value: dict[str, str]) -> dict[str, str]:
+        for data_url in value.values():
+            if not data_url.startswith("data:image/"):
+                raise ValueError("Enhanced images must be data:image/ URLs")
+            if len(data_url) > 20 * 1024 * 1024:
+                raise ValueError("Enhanced image exceeds the 20 MB limit")
+        return value
+
 
 class PromptUpdate(BaseModel):
     prompt: str = Field(min_length=1, max_length=50_000)
+
+
+class EnhanceRequest(BaseModel):
+    padding: float = Field(default=0.25, ge=0, le=1)
+    max_edge: int = Field(default=896, ge=128, le=4096)
 
 
 @app.get("/dataset.json", include_in_schema=False)
@@ -215,6 +233,7 @@ async def evaluate(payload: EvaluationRequest, request: Request) -> StreamingRes
                     max_edge=payload.max_edge,
                     padding=payload.padding,
                     emit=emit,
+                    enhanced_data_url=payload.enhanced.get(crop_id),
                 )
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
@@ -243,6 +262,47 @@ async def evaluate(payload: EvaluationRequest, request: Request) -> StreamingRes
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/crops/{crop_id}/enhance")
+async def enhance(crop_id: str, payload: EnhanceRequest) -> JSONResponse:
+    api_key = os.getenv(OPENROUTER_API_KEY_KEY)
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is not configured")
+    crop = catalog.crops.get(crop_id)
+    if crop is None:
+        raise HTTPException(status_code=404, detail=f"Unknown crop ID: {crop_id}")
+    started = time.perf_counter()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=15)) as client:
+        try:
+            image, usage = await enhance_crop_image(
+                client,
+                crop,
+                api_key=api_key,
+                padding=payload.padding,
+                max_edge=payload.max_edge,
+            )
+        except EnhancementError as error:
+            print(f"[enhance] {crop_id}: {error}", flush=True)
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        except httpx.HTTPError as error:
+            print(f"[enhance] {crop_id}: request failed: {error!r}", flush=True)
+            raise HTTPException(status_code=502, detail=f"Enhance request failed: {error}") from error
+    return JSONResponse(
+        {
+            "crop_id": crop_id,
+            "image": image,
+            "model": ENHANCE_MODEL,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "usage": {
+                "cost": usage.get("cost"),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+                "image_tokens": (usage.get("completion_tokens_details") or {}).get("image_tokens"),
+            },
+        }
+    )
 
 
 FRONTEND = ROOT / "frontend"

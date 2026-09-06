@@ -127,6 +127,62 @@ def test_upload_registers_detected_teeth_from_raw_image(tmp_path, monkeypatch) -
     uploaded_sources.pop(image["image_id"], None)
 
 
+def test_enhance_endpoint_returns_model_image(monkeypatch) -> None:
+    crop_id = next(iter(catalog.crops))
+
+    async def fake_enhance(_client, crop, **kwargs):
+        assert kwargs["padding"] == 0.25
+        return "data:image/png;base64,AAAA", {"cost": 0.0123, "total_tokens": 200}
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    with patch("backend.app.enhance_crop_image", fake_enhance):
+        response = client.post(f"/api/crops/{crop_id}/enhance", json={"padding": 0.25})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["crop_id"] == crop_id
+    assert payload["image"] == "data:image/png;base64,AAAA"
+    assert payload["model"]
+    assert "latency_ms" in payload
+    assert payload["usage"]["cost"] == 0.0123
+
+
+def test_enhance_endpoint_requires_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    crop_id = next(iter(catalog.crops))
+    response = client.post(f"/api/crops/{crop_id}/enhance", json={})
+    assert response.status_code == 503
+
+
+def test_enhance_endpoint_rejects_unknown_crop(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    response = client.post("/api/crops/not-a-real-crop/enhance", json={})
+    assert response.status_code == 404
+
+
+def test_evaluate_forwards_enhanced_image(monkeypatch) -> None:
+    crop_id = next(iter(catalog.crops))
+    seen: dict[str, object] = {}
+
+    async def fake_evaluate(_client, crop, **kwargs):
+        seen["enhanced_data_url"] = kwargs["enhanced_data_url"]
+        await kwargs["emit"]({"type": "completed", "crop_id": crop.crop_id, "result": {"verdict": "absent"}})
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    with patch("backend.app.evaluate_one", fake_evaluate):
+        response = client.post(
+            "/api/evaluate",
+            json={
+                "crop_ids": [crop_id],
+                "prompt": "Evaluate",
+                "schema": {"type": "object"},
+                "model": "test/model",
+                "enhanced": {crop_id: "data:image/png;base64,AAAA"},
+            },
+        )
+    assert response.status_code == 200
+    assert seen["enhanced_data_url"] == "data:image/png;base64,AAAA"
+
+
 def test_upload_rejects_non_image() -> None:
     response = client.post(
         "/api/images/upload",

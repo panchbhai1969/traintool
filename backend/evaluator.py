@@ -132,12 +132,17 @@ async def evaluate_one(
     max_edge: int,
     padding: float,
     emit: Emit,
+    enhanced_data_url: str | None = None,
 ) -> None:
     await emit({"type": "running", "crop_id": crop.crop_id})
     started = time.perf_counter()
     try:
-        source_path = await _source_image(client, crop)
-        crop_path, data_url = await asyncio.to_thread(_prepare_crop, source_path, crop, padding, max_edge)
+        if enhanced_data_url is not None:
+            crop_path = None
+            data_url = enhanced_data_url
+        else:
+            source_path = await _source_image(client, crop)
+            crop_path, data_url = await asyncio.to_thread(_prepare_crop, source_path, crop, padding, max_edge)
         messages = [
             {
                 "role": "system",
@@ -176,7 +181,7 @@ async def evaluate_one(
             "prompt_tokens": usage.get("prompt_tokens"),
             "completion_tokens": usage.get("completion_tokens"),
             "cost": usage.get("cost"),
-            "crop_path": str(crop_path.relative_to(CROP_DIR.parent)),
+            "crop_path": str(crop_path.relative_to(CROP_DIR.parent)) if crop_path is not None else None,
         }
         try:
             parsed = parse_and_validate(raw, schema)

@@ -70,8 +70,13 @@ h3 { font-size: 15px; overflow-wrap: anywhere; }
 .crop-card.errored { border-color: #b65048; }
 .crop-card.working { border-color: #9a8948; }
 .crop-frame { aspect-ratio: 1.25; background: #737373; border-radius: 6px; overflow: hidden; }
-.crop-image { display: block; width: 100%; height: 100%; background: #737373; }
+.crop-image { display: block; width: 100%; height: 100%; background: #737373; object-fit: fill; }
 .crop-meta, .verdict { display: flex; justify-content: space-between; align-items: center; padding: 8px 3px 1px; font-size: 12px; }
+.crop-actions { padding: 6px 3px 0; }
+.enhance-btn { width: 100%; min-height: 30px; font-size: 11px; cursor: pointer; }
+.enhance-btn.ready { border-color: #66886d; color: #bfe0c6; }
+.enhance-btn.failed { border-color: #b65048; color: #ffb0a8; }
+.enhance-btn.loading { opacity: .6; }
 .status { color: #8f938a; text-transform: capitalize; }
 .verdict { padding-top: 4px; color: #d7dacf; }
 .detail { margin-top: 18px; border-top: 1px solid #30322e; padding-top: 18px; display: grid; grid-template-columns: minmax(260px, 38%) 1fr; gap: 22px; }
