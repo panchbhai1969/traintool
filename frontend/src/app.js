@@ -105,7 +105,7 @@ function cropCards(image) {
     return `<article class="crop-card ${state.selected.has(crop.crop_id) ? 'selected' : ''} ${resultClass(event)}" data-crop="${escapeHtml(crop.crop_id)}">
       <div class="crop-frame">${cropVisual(image, crop)}</div>
       <div class="crop-meta"><span>Tooth ${index + 1}</span><span class="status">${escapeHtml(event?.type?.replace('_', ' ') || 'ready')}</span></div>
-      <div class="crop-actions"><button class="enhance-btn ${enhanced?.status || ''}" data-enhance="${escapeHtml(crop.crop_id)}" ${enhanced?.status === 'loading' ? 'disabled' : ''}>${enhanceLabel(enhanced)}</button></div>
+      <div class="crop-actions"><button class="enhance-btn ${enhanced?.status ? `enh-${enhanced.status}` : ''}" data-enhance="${escapeHtml(crop.crop_id)}" ${enhanced?.status === 'loading' ? 'disabled' : ''}>${enhanceLabel(enhanced)}</button></div>
       ${verdict ? `<div class="verdict"><b>${verdict === 'present' ? `${findingLabel()} present` : `No ${state.finding}`}</b></div>` : ''}
     </article>`
   }).join('')}</div>`
@@ -513,7 +513,15 @@ async function enhanceOrToggle(cropId) {
   }
   state.enhanced[cropId] = { status: 'loading', shown: false }
   state.banner = ''
-  render()
+  // Patch just this tile's button in place — a full render() here would flash and
+  // reflow the entire grid for the whole (~20s) enhancement.
+  const button = document.querySelector(`[data-enhance="${CSS.escape(cropId)}"]`)
+  if (button) {
+    button.textContent = enhanceLabel(state.enhanced[cropId])
+    button.disabled = true
+    button.className = 'enhance-btn enh-loading'
+  }
+  document.querySelector('.banner')?.remove()
   const startedAt = performance.now()
   try {
     const response = await fetch(`/api/crops/${encodeURIComponent(cropId)}/enhance`, {
