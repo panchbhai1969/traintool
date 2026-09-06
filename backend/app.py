@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import io
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -24,7 +27,7 @@ from .dataset import DatasetCatalog
 from .enhancer import EnhancementError, enhance_crop_image
 from .evaluator import evaluate_one
 from .prompts import DEFAULT_FINDING, FINDINGS, load_prompts, save_prompt
-from .settings import DEFAULT_MODEL, ENHANCE_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
+from .settings import APP_PASSWORD, DEFAULT_MODEL, ENHANCE_MODEL, OPENROUTER_API_KEY_KEY, ROOT, UPLOAD_DIR
 from .tooth_extractor import ToothExtractionError, extract_teeth
 
 
@@ -37,6 +40,27 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
+
+
+if APP_PASSWORD:
+
+    @app.middleware("http")
+    async def require_password(request: Request, call_next):
+        header = request.headers.get("authorization", "")
+        scheme, _, credentials = header.partition(" ")
+        supplied = ""
+        if scheme.lower() == "basic":
+            try:
+                supplied = base64.b64decode(credentials).decode("utf-8").partition(":")[2]
+            except (binascii.Error, UnicodeDecodeError):
+                supplied = ""
+        if not secrets.compare_digest(supplied, APP_PASSWORD):
+            return JSONResponse(
+                {"detail": "Authentication required"},
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="traintool"'},
+            )
+        return await call_next(request)
 
 
 DEFAULT_SCHEMA: dict[str, Any] = {

@@ -49,6 +49,8 @@ first file to define a key wins over the second.
 - `OPENROUTER_MODEL` (default `qwen/qwen3-vl-235b-a22b-instruct`), `OPENROUTER_BASE_URL`.
 - `ENHANCE_MODEL` (default `openai/gpt-image-2`), `ENHANCE_PROMPT` (default `enhance the image`) — used by the per-crop Enhance button.
 - `TOOTH_API_URL` (default `https://internal9.logy.ai/runsync`), `TOOTH_API_KEY` (optional).
+- `TRAINTOOL` (optional) — when set, every request is gated behind HTTP Basic auth
+  (any username, this value as the password), enforced by a middleware in `backend/app.py`.
 
 ## Architecture
 

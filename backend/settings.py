@@ -29,6 +29,7 @@ ENHANCE_MODEL = os.getenv("ENHANCE_MODEL", "openai/gpt-image-2")
 ENHANCE_PROMPT = os.getenv("ENHANCE_PROMPT", "enhance the image")
 TOOTH_API_URL = os.getenv("TOOTH_API_URL", "https://internal9.logy.ai/runsync")
 TOOTH_API_KEY = os.getenv("TOOTH_API_KEY")
+APP_PASSWORD = os.getenv("TRAINTOOL") or None
 DATA_DIR = ROOT / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 CROP_DIR = DATA_DIR / "crops"

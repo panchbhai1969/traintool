@@ -1,3 +1,4 @@
+import base64
 import io
 from unittest.mock import patch
 
@@ -5,10 +6,16 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app import DEFAULT_SCHEMA, app, catalog, uploaded_sources
+from backend.settings import APP_PASSWORD
 from backend.tooth_extractor import ToothDetection
 
 
-client = TestClient(app)
+_auth_headers = (
+    {"Authorization": "Basic " + base64.b64encode(f":{APP_PASSWORD}".encode()).decode()}
+    if APP_PASSWORD
+    else {}
+)
+client = TestClient(app, headers=_auth_headers)
 
 
 def test_default_schema_puts_reasoning_first() -> None:
